@@ -5,14 +5,10 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-/**
- * Get the path to the templates directory.
- * Works both in development (src/) and production (dist/).
- */
 export function getTemplatesDir(): string {
-  // From dist/index.js or src/utils/template.ts, go up to project root
-  const root = path.resolve(__dirname, "..", "..");
-  return path.join(root, "templates");
+  const dir = path.resolve(__dirname, "..", "templates");
+  console.log("DEBUG getTemplatesDir:", __dirname, "->", dir);
+  return dir;
 }
 
 /**
