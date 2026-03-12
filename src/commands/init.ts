@@ -114,6 +114,89 @@ async function writeSamConfig(
   logger.success("Created sam.config.json");
 }
 
+async function createD1Database(
+  targetDir: string,
+  d1DatabaseName: string,
+): Promise<string | null> {
+  const shouldCreate = await confirm({
+    message: `Create D1 database "${d1DatabaseName}" on Cloudflare now?`,
+    default: true,
+  });
+
+  if (!shouldCreate) {
+    logger.info("Skipping D1 database creation. You can create it later with: wrangler d1 create");
+    return null;
+  }
+
+  logger.step(`Creating D1 database "${d1DatabaseName}"...`);
+  try {
+    await run(
+      "npx",
+      ["wrangler", "d1", "create", d1DatabaseName, "--binding", "DB"],
+      { cwd: targetDir }
+    );
+
+    // Wrangler should have updated the wrangler.toml, let's read the database_id
+    const wranglerPath = path.join(targetDir, "wrangler.toml");
+    if (await fs.pathExists(wranglerPath)) {
+      const wranglerContent = await fs.readFile(wranglerPath, "utf-8");
+      const match = wranglerContent.match(/database_id\s*=\s*"([^"]+)"/);
+      if (match && match[1]) {
+        logger.success(`D1 database created with ID: ${match[1]}`);
+        return match[1];
+      }
+    }
+
+    logger.success("D1 database created. Check wrangler.toml for database_id.");
+    return null;
+  } catch (error) {
+    logger.warn("Failed to create D1 database. You can create it manually later with:");
+    logger.info(`  wrangler d1 create ${d1DatabaseName}`);
+    return null;
+  }
+}
+
+async function writeWranglerToml(
+  targetDir: string,
+  projectName: string,
+  d1DatabaseName: string,
+  databaseId?: string | null,
+): Promise<void> {
+  const wranglerToml = `name = "${projectName}"
+main = "./build/server/index.js"
+compatibility_date = "2025-08-05"
+compatibility_flags = ["nodejs_compat"]
+
+[build]
+command = "npm run build:worker"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "${d1DatabaseName}"
+database_id = "${databaseId || ""}"
+
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
+`;
+
+  const wranglerPath = path.join(targetDir, "wrangler.toml");
+  await fs.writeFile(wranglerPath, wranglerToml);
+  logger.success("Created wrangler.toml");
+}
+
+async function updatePackageJson(targetDir: string): Promise<void> {
+  const packageJsonPath = path.join(targetDir, "package.json");
+  const packageJson = await fs.readJson(packageJsonPath);
+  
+  packageJson.scripts = packageJson.scripts || {};
+  packageJson.scripts["build:worker"] = "vite build --config vite.worker.config.ts";
+  
+  await fs.writeJson(packageJsonPath, packageJson, { spaces: 2 });
+  logger.success("Added build:worker script to package.json");
+}
+
 async function installDependencies(
   targetDir: string,
   skip?: boolean,
@@ -154,7 +237,7 @@ function printSuccessMessage(projectName: string): void {
   logger.step("Run: sam dev");
   logger.blank();
   logger.info("Other commands:");
-  logger.step("sam deploy    - Deploy to Cloudflare Workers");
+  logger.step("sam deploy    - Create your Cloudflare Worker and deploy to production");
   logger.step("sam release   - Create a new Shopify app version");
   logger.blank();
 }
@@ -188,10 +271,26 @@ export const initCommand = new Command("init")
       await runShopifyInit(projectName, templateUrl);
 
       await verifyProjectCreated(targetDir);
+      await updatePackageJson(targetDir);
       await copyWorkerFiles(targetDir);
       await writeSamConfig(targetDir, projectName, d1DatabaseName);
+      await writeWranglerToml(targetDir, projectName, d1DatabaseName);
 
+      // Create D1 database after dependencies are installed (wrangler needs to be available)
       await installDependencies(targetDir, options?.skipInstall);
+
+      let databaseId: string | null = null;
+      if (!options?.skipInstall) {
+        databaseId = await createD1Database(targetDir, d1DatabaseName);
+        if (databaseId) {
+          // Update wrangler.toml with the database_id
+          await writeWranglerToml(targetDir, projectName, d1DatabaseName, databaseId);
+        }
+      } else {
+        logger.info("Skipping D1 database creation (--skip-install). Run manually:");
+        logger.info(`  cd ${projectName} && npx wrangler d1 create ${d1DatabaseName}`);
+      }
+
       await generatePrismaClient(targetDir, options?.skipInstall);
 
       printSuccessMessage(projectName);
