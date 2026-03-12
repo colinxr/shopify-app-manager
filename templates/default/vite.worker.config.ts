@@ -31,5 +31,14 @@ export default defineConfig({
   },
   build: {
     minify: true,
+    ssr: true,
+    rollupOptions: {
+      input: "./app/entry.server.worker.tsx",
+      output: {
+        dir: "build/server",
+        format: "esm",
+        entryFileNames: "index.js",
+      },
+    },
   },
 });
